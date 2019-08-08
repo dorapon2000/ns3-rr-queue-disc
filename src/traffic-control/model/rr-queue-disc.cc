@@ -18,47 +18,90 @@
  * Authors:  Stefano Avallone <stavallo@unina.it>
  */
 
+#include "rr-queue-disc.h"
+#include <algorithm>
 #include "ns3/log.h"
-#include "fifo-queue-disc.h"
 #include "ns3/object-factory.h"
 #include "ns3/drop-tail-queue.h"
-#include "ns3/net-device-queue-interface.h"
 
 namespace ns3 {
 
-NS_LOG_COMPONENT_DEFINE ("FifoQueueDisc");
+NS_LOG_COMPONENT_DEFINE ("RRQueueDisc");
 
-NS_OBJECT_ENSURE_REGISTERED (FifoQueueDisc);
+NS_OBJECT_ENSURE_REGISTERED (RRQueueDisc);
 
-TypeId FifoQueueDisc::GetTypeId (void)
+TypeId RRQueueDisc::GetTypeId (void)
 {
-  static TypeId tid = TypeId ("ns3::FifoQueueDisc")
+  static TypeId tid = TypeId ("ns3::RRQueueDisc")
     .SetParent<QueueDisc> ()
     .SetGroupName ("TrafficControl")
-    .AddConstructor<FifoQueueDisc> ()
+    .AddConstructor<RRQueueDisc> ()
     .AddAttribute ("MaxSize",
                    "The max queue size",
                    QueueSizeValue (QueueSize ("1000p")),
                    MakeQueueSizeAccessor (&QueueDisc::SetMaxSize,
                                           &QueueDisc::GetMaxSize),
                    MakeQueueSizeChecker ())
+    .AddAttribute ("QueueNum",
+                   "The number of Queue",
+                   UintegerValue (10),
+                   MakeUintegerAccessor (&RRQueueDisc::m_queueNum),
+                   MakeUintegerChecker<uint32_t> ())
   ;
   return tid;
 }
 
-FifoQueueDisc::FifoQueueDisc ()
-  : QueueDisc (QueueDiscSizePolicy::SINGLE_INTERNAL_QUEUE)
+RRQueueDisc::RRQueueDisc ()
+  : QueueDisc (QueueDiscSizePolicy::MULTIPLE_QUEUES, QueueSizeUnit::PACKETS),
+    m_queueNum (10),
+    m_rrIndex (0)
 {
   NS_LOG_FUNCTION (this);
 }
 
-FifoQueueDisc::~FifoQueueDisc ()
+RRQueueDisc::~RRQueueDisc ()
 {
   NS_LOG_FUNCTION (this);
+}
+
+int16_t
+RRQueueDisc::findIndex(uint32_t value)
+{
+  auto iter = std::find(m_queueHashList.begin(), m_queueHashList.end(), value);
+  size_t index = std::distance(m_queueHashList.begin(), iter);
+
+  if(index == m_queueHashList.size())
+    {
+      return -1;
+    }
+
+  return index;
+}
+
+int16_t
+RRQueueDisc::GetQueueIndex (uint32_t flowHash)
+{
+  NS_LOG_FUNCTION (this << flowHash);
+
+  int16_t index = findIndex(flowHash);
+
+  if (index == -1)
+    {
+      if (m_queueHashList.size() >= m_queueNum)
+        {
+          return -1;
+        }
+
+      m_queueHashList.push_back(flowHash);
+
+      return findIndex(flowHash);
+    }
+
+  return index;
 }
 
 bool
-FifoQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
+RRQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
 {
   NS_LOG_FUNCTION (this << item);
 
@@ -69,7 +112,17 @@ FifoQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
       return false;
     }
 
-  bool retval = GetInternalQueue (0)->Enqueue (item);
+  uint32_t flowHash = item->Hash(0);
+  int16_t queueIndex = GetQueueIndex (flowHash);
+
+  if (queueIndex == -1)
+    {
+      NS_LOG_LOGIC ("Too many flows -- dropping pkt");
+      DropBeforeEnqueue (item, TOO_MANY_FLOWS_DROP);
+      return false;
+    }
+
+  bool retval = GetInternalQueue (queueIndex)->Enqueue (item);
 
   // If Queue::Enqueue fails, QueueDisc::DropBeforeEnqueue is called by the
   // internal queue because QueueDisc::AddInternalQueue sets the trace callback
@@ -81,71 +134,97 @@ FifoQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
 }
 
 Ptr<QueueDiscItem>
-FifoQueueDisc::DoDequeue (void)
+RRQueueDisc::DoDequeue (void)
 {
   NS_LOG_FUNCTION (this);
 
-  Ptr<QueueDiscItem> item = GetInternalQueue (0)->Dequeue ();
-
-  if (!item)
+  uint16_t lastRrIndex = m_rrIndex;
+  while (true)
     {
-      NS_LOG_LOGIC ("Queue empty");
-      return 0;
+      m_rrIndex = (m_rrIndex + 1) % m_queueNum;
+      Ptr<QueueDiscItem> item = GetInternalQueue (m_rrIndex)->Dequeue ();
+
+      if (item)
+        {
+          return item;
+        }
+
+      if (lastRrIndex == m_rrIndex)
+        {
+          break;
+        }
     }
 
-  return item;
+  NS_LOG_LOGIC ("Queue empty");
+  return 0;
 }
 
 Ptr<const QueueDiscItem>
-FifoQueueDisc::DoPeek (void)
+RRQueueDisc::DoPeek (void)
 {
   NS_LOG_FUNCTION (this);
 
-  Ptr<const QueueDiscItem> item = GetInternalQueue (0)->Peek ();
-
-  if (!item)
+  uint16_t lastRrIndex = m_rrIndex;
+  while (true)
     {
-      NS_LOG_LOGIC ("Queue empty");
-      return 0;
+      m_rrIndex = (m_rrIndex + 1) % m_queueNum;
+      Ptr<const QueueDiscItem> item = GetInternalQueue (m_rrIndex)->Peek ();
+
+      if (item)
+        {
+          m_rrIndex = lastRrIndex;
+          return item;
+        }
+
+      if (lastRrIndex == m_rrIndex)
+        {
+          break;
+        }
     }
 
-  return item;
+  m_rrIndex = lastRrIndex;
+
+  NS_LOG_LOGIC ("Queue empty");
+  return 0;
 }
 
 bool
-FifoQueueDisc::CheckConfig (void)
+RRQueueDisc::CheckConfig (void)
 {
   NS_LOG_FUNCTION (this);
   if (GetNQueueDiscClasses () > 0)
     {
-      NS_LOG_ERROR ("FifoQueueDisc cannot have classes");
+      NS_LOG_ERROR ("RRQueueDisc cannot have classes");
       return false;
     }
 
   if (GetNPacketFilters () > 0)
     {
-      NS_LOG_ERROR ("FifoQueueDisc needs no packet filter");
+      NS_LOG_ERROR ("RRQueueDisc needs no packet filter");
       return false;
     }
 
-  if (GetNInternalQueues () == 0)
+  if (m_queueNum == 0)
+    {
+      NS_LOG_ERROR ("queueNum must be larger than 0");
+      return false;
+    }
+
+  if (GetNInternalQueues () < m_queueNum)
     {
       // add a DropTail queue
-      AddInternalQueue (CreateObjectWithAttributes<DropTailQueue<QueueDiscItem> >
+      while (GetNInternalQueues () < m_queueNum)
+      {
+        AddInternalQueue (CreateObjectWithAttributes<DropTailQueue<QueueDiscItem> >
                           ("MaxSize", QueueSizeValue (GetMaxSize ())));
-    }
-
-  if (GetNInternalQueues () != 1)
-    {
-      NS_LOG_ERROR ("FifoQueueDisc needs 1 internal queue");
-      return false;
+      }
     }
 
   return true;
 }
 
 void
-FifoQueueDisc::InitializeParams (void)
+RRQueueDisc::InitializeParams (void)
 {
   NS_LOG_FUNCTION (this);
 }

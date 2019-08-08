@@ -18,8 +18,8 @@
  * Authors:  Stefano Avallone <stavallo@unina.it>
  */
 
-#ifndef FIFO_QUEUE_DISC_H
-#define FIFO_QUEUE_DISC_H
+#ifndef RR_QUEUE_DISC_H
+#define RR_QUEUE_DISC_H
 
 #include "ns3/queue-disc.h"
 
@@ -28,10 +28,10 @@ namespace ns3 {
 /**
  * \ingroup traffic-control
  *
- * Simple queue disc implementing the FIFO (First-In First-Out) policy.
+ * Queue disc implementing the RR (Round Robin) policy.
  *
  */
-class FifoQueueDisc : public QueueDisc {
+class RRQueueDisc : public QueueDisc {
 public:
   /**
    * \brief Get the type ID.
@@ -39,16 +39,17 @@ public:
    */
   static TypeId GetTypeId (void);
   /**
-   * \brief FifoQueueDisc constructor
+   * \brief RRQueueDisc constructor
    *
    * Creates a queue with a depth of 1000 packets by default
    */
-  FifoQueueDisc ();
+  RRQueueDisc ();
 
-  virtual ~FifoQueueDisc();
+  virtual ~RRQueueDisc();
 
   // Reasons for dropping packets
   static constexpr const char* LIMIT_EXCEEDED_DROP = "Queue disc limit exceeded";  //!< Packet dropped due to queue disc limit exceeded
+  static constexpr const char* TOO_MANY_FLOWS_DROP = "The num of flows is over limit";  //!< Packet dropped due to too many flows
 
 private:
   virtual bool DoEnqueue (Ptr<QueueDiscItem> item);
@@ -56,8 +57,24 @@ private:
   virtual Ptr<const QueueDiscItem> DoPeek (void);
   virtual bool CheckConfig (void);
   virtual void InitializeParams (void);
+  /**
+   * \brief Find index of value in m_rrIndex
+   * Ref to http://yamayatakeshi.jp/c11%E3%81%A3%E3%81%BD%E3%81%8Fstdvector%E3%81%A7index%E3%82%92find%E3%81%97%E3%81%9F%E3%81%84/
+   * @param value value you search
+   * @return index of value in m_rrIndex
+   */
+  int16_t findIndex(uint32_t value);
+  /**
+   * \brief Get the index of internal queue corresponding to the flow hash
+   * @param flowHash
+   * @return Index of internal queue
+   */
+  int16_t GetQueueIndex (uint32_t flowHash);
+  uint16_t m_queueNum; //!< Number of queue
+  uint16_t m_rrIndex; //!< Index for round robin
+  std::vector<uint32_t> m_queueHashList; //!< List of queueHash
 };
 
 } // namespace ns3
 
-#endif /* FIFO_QUEUE_DISC_H */
+#endif /* RR_QUEUE_DISC_H */
