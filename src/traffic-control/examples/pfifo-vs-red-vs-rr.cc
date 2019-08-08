@@ -13,7 +13,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- * Author: John Abraham <john.abraham@gatech.edu> 
+ * Author: John Abraham <john.abraham@gatech.edu>
  * Modified by:   Pasquale Imputato <p.imputato@gmail.com>
  *
  */
@@ -33,10 +33,11 @@
 
 using namespace ns3;
 
+NS_LOG_COMPONENT_DEFINE ("PFIFO_VS_RED_VS_RR");
 
 int main (int argc, char *argv[])
 {
-  uint32_t    nLeaf = 5; 
+  uint32_t    nLeaf = 5;
   uint32_t    maxPackets = 100;
   uint32_t    modeBytes  = 0;
   uint32_t    queueDiscLimitPackets = 1000;
@@ -48,6 +49,7 @@ int main (int argc, char *argv[])
   uint16_t port = 5001;
   std::string bottleNeckLinkBw = "1Mbps";
   std::string bottleNeckLinkDelay = "50ms";
+  uint16_t    rrQueueNum = 10;
 
   CommandLine cmd;
   cmd.AddValue ("nLeaf",     "Number of left and right side leaf nodes", nLeaf);
@@ -60,11 +62,13 @@ int main (int argc, char *argv[])
 
   cmd.AddValue ("redMinTh", "RED queue minimum threshold", minTh);
   cmd.AddValue ("redMaxTh", "RED queue maximum threshold", maxTh);
+
+  cmd.AddValue ("rrQueueNum", "Number of RR queue", rrQueueNum);
   cmd.Parse (argc,argv);
 
-  if ((queueDiscType != "RED") && (queueDiscType != "PfifoFast"))
+  if ((queueDiscType != "RED") && (queueDiscType != "PfifoFast") && (queueDiscType != "RR"))
     {
-      NS_ABORT_MSG ("Invalid queue disc type: Use --queueDiscType=RED or --queueDiscType=PfifoFast");
+      NS_ABORT_MSG ("Invalid queue disc type: Use --queueDiscType=RED or PfifoFast or RR");
     }
 
   Config::SetDefault ("ns3::OnOffApplication::PacketSize", UintegerValue (pktSize));
@@ -79,8 +83,10 @@ int main (int argc, char *argv[])
                         QueueSizeValue (QueueSize (QueueSizeUnit::PACKETS, queueDiscLimitPackets)));
     Config::SetDefault ("ns3::PfifoFastQueueDisc::MaxSize",
                         QueueSizeValue (QueueSize (QueueSizeUnit::PACKETS, queueDiscLimitPackets)));
+    Config::SetDefault ("ns3::RRQueueDisc::MaxSize",
+                        QueueSizeValue (QueueSize (QueueSizeUnit::PACKETS, queueDiscLimitPackets)));
   }
-  else 
+  else
   {
     Config::SetDefault ("ns3::RedQueueDisc::MaxSize",
                         QueueSizeValue (QueueSize (QueueSizeUnit::BYTES, queueDiscLimitPackets * pktSize)));
@@ -92,6 +98,8 @@ int main (int argc, char *argv[])
   Config::SetDefault ("ns3::RedQueueDisc::MaxTh", DoubleValue (maxTh));
   Config::SetDefault ("ns3::RedQueueDisc::LinkBandwidth", StringValue (bottleNeckLinkBw));
   Config::SetDefault ("ns3::RedQueueDisc::LinkDelay", StringValue (bottleNeckLinkDelay));
+
+  Config::SetDefault ("ns3::RRQueueDisc::QueueNum", UintegerValue (rrQueueNum));
 
   // Create the point-to-point link helpers
   PointToPointHelper bottleNeckLink;
@@ -117,20 +125,29 @@ int main (int argc, char *argv[])
      stack.Install (d.GetRight (i));
     }
 
+  stack.Install (d.GetLeft ());
+  stack.Install (d.GetRight ());
+  TrafficControlHelper tchBottleneck;
+
   if (queueDiscType == "PfifoFast")
     {
-      stack.Install (d.GetLeft ());
-      stack.Install (d.GetRight ());
+      tchBottleneck.SetRootQueueDisc ("ns3::RedQueueDisc");
     }
   else if (queueDiscType == "RED")
     {
-      stack.Install (d.GetLeft ());
-      stack.Install (d.GetRight ());
-      TrafficControlHelper tchBottleneck;
       tchBottleneck.SetRootQueueDisc ("ns3::RedQueueDisc");
-      tchBottleneck.Install (d.GetLeft ()->GetDevice (0));
-      tchBottleneck.Install (d.GetRight ()->GetDevice (0));
     }
+  else if (queueDiscType == "RED")
+    {
+      tchBottleneck.SetRootQueueDisc ("ns3::RRQueueDisc");
+    }
+  else
+    {
+      NS_LOG_ERROR ("queueDiscType must be RED/PfifoFast/RR: " << queueDiscType);
+    }
+
+  tchBottleneck.Install (d.GetLeft ()->GetDevice (0));
+  tchBottleneck.Install (d.GetRight ()->GetDevice (0));
 
   // Assign IP Addresses
   d.AssignIpv4Addresses (Ipv4AddressHelper ("10.1.1.0", "255.255.255.0"),
@@ -143,7 +160,7 @@ int main (int argc, char *argv[])
   clientHelper.SetAttribute ("OffTime", StringValue ("ns3::UniformRandomVariable[Min=0.|Max=1.]"));
   Address sinkLocalAddress (InetSocketAddress (Ipv4Address::GetAny (), port));
   PacketSinkHelper packetSinkHelper ("ns3::TcpSocketFactory", sinkLocalAddress);
-  ApplicationContainer sinkApps; 
+  ApplicationContainer sinkApps;
   for (uint32_t i = 0; i < d.LeftCount (); ++i)
     {
       sinkApps.Add (packetSinkHelper.Install (d.GetLeft (i)));
@@ -174,10 +191,10 @@ int main (int argc, char *argv[])
       Ptr <PacketSink> pktSink = DynamicCast <PacketSink> (app);
       totalRxBytesCounter += pktSink->GetTotalRx ();
     }
-  NS_LOG_UNCOND ("----------------------------\nQueueDisc Type:" 
-                 << queueDiscType 
-                 << "\nGoodput Bytes/sec:" 
-                 << totalRxBytesCounter/Simulator::Now ().GetSeconds ()); 
+  NS_LOG_UNCOND ("----------------------------\nQueueDisc Type:"
+                 << queueDiscType
+                 << "\nGoodput Bytes/sec:"
+                 << totalRxBytesCounter/Simulator::Now ().GetSeconds ());
   NS_LOG_UNCOND ("----------------------------");
 
 
